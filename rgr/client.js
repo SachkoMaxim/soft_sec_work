@@ -2,7 +2,6 @@ const net = require('net');
 const fs = require('fs');
 const readline = require('readline');
 const crypto = require('crypto');
-const path = require('path');
 const {
   generateRandomString,
   encryptWithPublicKey,
@@ -14,16 +13,12 @@ const {
 const PORT = 7462;
 const HOST = 'localhost';
 
+const CA_PORT = 9034;
+const CA_HOST = 'localhost';
+
 class TLSClient {
   constructor() {
-    // Отримання сертифіката CA
-    console.log('🔑 Loading CA certificate...');
-
-    const CaCertificatePath = path.join(__dirname, 'certs', 'ca.crt');
-    const trustedCaCertificatePem = fs.readFileSync(CaCertificatePath, 'utf8');
-    this.caCert = new crypto.X509Certificate(trustedCaCertificatePem);
-
-    console.log('✔️ Client has uploaded trusted CA certificate.\n');
+    console.log('⏳ Loading Client...');
 
     this.client = null;
     this.session = {
@@ -53,114 +48,112 @@ class TLSClient {
       console.log('[Client]✅[1] Sent CLIENT HELLO');
 
       // Крок 2: Отримання 'Server Hello'
-      this.client.once('data', (serverHelloData) => {
+      this.client.once('data', async (serverHelloData) => {
         try {
           const serverHello = JSON.parse(serverHelloData.toString());
           this.session.serverRandom = Buffer.from(serverHello.serverRandom, 'base64');
+          const serverCertCheck = serverHello.certificatePem;
           console.log('\n[Client]📨[2] Received SERVER HELLO + SSL Certificate');
           console.log(`   Server Random: ${serverHello.serverRandom.toString('base64').substring(0, 16)}...`);
           console.log(`   Certificate S/N: \n${serverHello.certificatePem.substring(0, 300)}...`);
 
-          //  Крок 3: Перевірка сертифіката в CA
-          console.log('\n[Client]🔐[3] Authentication - Verifying certificate with CA');
+          //  Крок 3: Перевірка сертифіката в CA Server
+          console.log('\n[Client]🔐[3] Authentication - Verifying certificate with CA Server');
           try {
-            const serverCert = new crypto.X509Certificate(serverHello.certificatePem);
-
-            if (!serverCert.verify(this.caCert.publicKey)) {
-              throw new Error('❌ Server certificate is NOT signed by a trusted CA!');
-            }
-
+            await this.checkCertValidity(serverCertCheck);
             console.log('[Client]✅[3] Server certificate is valid');
+          } catch (e) {
+            console.error(`[Client]🚨[3] VERIFICATION FAILED: ${e.message}!!!`);
+            this.disconnect();
+            return;
+          }
 
 
-            // Крок 4: Генерація та відправка 'Premaster Secret'
-            this.session.premasterSecret = generateRandomString(48);
-            console.log('\n[Client]🔑[4] Generating PREMASTER SECRET');
-            console.log(`   Premaster Secret: ${this.session.premasterSecret.toString('base64').substring(0, 16)}...`);
+          // Крок 4: Генерація та відправка 'Premaster Secret'
+          const serverCert = new crypto.X509Certificate(serverCertCheck);
+          this.session.premasterSecret = generateRandomString(48);
+          console.log('\n[Client]🔑[4] Generating PREMASTER SECRET');
+          console.log(`   Premaster Secret: ${this.session.premasterSecret.toString('base64').substring(0, 16)}...`);
 
-            const encryptedPremaster = encryptWithPublicKey(this.session.premasterSecret, serverCert.publicKey);
+          const encryptedPremaster = encryptWithPublicKey(this.session.premasterSecret, serverCert.publicKey);
 
-            const premasterMessage = {
-              encryptedPremaster: encryptedPremaster,
-            };
+          const premasterMessage = {
+            encryptedPremaster: encryptedPremaster,
+          };
 
-            console.log('\n[Client]📤[4] Sending encrypted PREMASTER SECRET');
+          console.log('\n[Client]📤[4] Sending encrypted PREMASTER SECRET');
 
-            this.client.write(JSON.stringify(premasterMessage));
+          this.client.write(JSON.stringify(premasterMessage));
 
-            console.log('[Client]✅[4] Send encrypted PREMASTER SECRET');
+          console.log('[Client]✅[4] Send encrypted PREMASTER SECRET');
 
-            // Крок 5: Генерація session key
-            this.session.sessionKey = generateSessionKey(
-              this.session.clientRandom,
-              this.session.serverRandom,
-              this.session.premasterSecret,
-            );
-            console.log(`\n[Client]✅[5] Session Key generated: ${this.session.sessionKey.toString('hex').substring(0, 16)}...`);
+          // Крок 5: Генерація session key
+          this.session.sessionKey = generateSessionKey(
+            this.session.clientRandom,
+            this.session.serverRandom,
+            this.session.premasterSecret,
+          );
+          console.log(`\n[Client]✅[5] Session Key generated: ${this.session.sessionKey.toString('hex').substring(0, 16)}...`);
 
-            // Крок 6: Відправка 'Client Finished' (зашифрованого session key)
-            const finishedMessage = 'Client: Finished';
-            const clientFinishedMsg = encryptWithSessionKey(finishedMessage, this.session.sessionKey);
+          // Крок 6: Відправка 'Client Finished' (зашифрованого session key)
+          const finishedMessage = 'Client: Finished';
+          const clientFinishedMsg = encryptWithSessionKey(finishedMessage, this.session.sessionKey);
 
-            console.log('\n[Client]📤[6] Sending encrypted CLIENT FINISHED');
-            this.client.write(JSON.stringify({ type: 'CLIENT_FINISHED', message: clientFinishedMsg }));
-            console.log('[Client]✅[6] Sent CLIENT FINISHED');
+          console.log('\n[Client]📤[6] Sending encrypted CLIENT FINISHED');
+          this.client.write(JSON.stringify({ type: 'CLIENT_FINISHED', message: clientFinishedMsg }));
+          console.log('[Client]✅[6] Sent CLIENT FINISHED');
 
-            // Крок 6: Отримання 'Server Finished' (зашифрованого session key)
-            this.client.once('data', (serverFinishedData) => {
-              try {
-                const serverFinished = JSON.parse(serverFinishedData.toString());
-                console.log('\n[Client]📨[6] Received encrypted SERVER FINISHED');
+          // Крок 6: Отримання 'Server Finished' (зашифрованого session key)
+          this.client.once('data', (serverFinishedData) => {
+            try {
+              const serverFinished = JSON.parse(serverFinishedData.toString());
+              console.log('\n[Client]📨[6] Received encrypted SERVER FINISHED');
 
-                const decryptedMsg = decryptWithSessionKey(serverFinished.message, this.session.sessionKey);
+              const decryptedMsg = decryptWithSessionKey(serverFinished.message, this.session.sessionKey);
 
-                if (decryptedMsg === 'Server: Finished') {
-                  console.log(`[Client]🔐[6] Received SERVER FINISHED: "${decryptedMsg}"`);
+              if (decryptedMsg === 'Server: Finished') {
+                console.log(`[Client]🔐[6] Received SERVER FINISHED: "${decryptedMsg}"`);
 
-                  console.log('\n🎉 ========================================');
-                  console.log('✅ TLS/SSL HANDSHAKE COMPLETED!');
-                  console.log('🔒 Secure channel established');
-                  console.log('========================================\n');
-                  console.log('   💬 Enter a message or "exit" to exit\n');
+                console.log('\n🎉 ========================================');
+                console.log('✅ TLS/SSL HANDSHAKE COMPLETED!');
+                console.log('🔒 Secure channel established');
+                console.log('========================================\n');
+                console.log('   💬 Enter a message or "exit" to exit\n');
 
-                  this.initReadline();
-                  this.rl.prompt();
+                this.initReadline();
+                this.rl.prompt();
 
-                  let chatBuffer = '';
-                  this.client.on('data', (encryptedChatData) => {
-                    chatBuffer += encryptedChatData.toString();
+                let chatBuffer = '';
+                this.client.on('data', (encryptedChatData) => {
+                  chatBuffer += encryptedChatData.toString();
 
-                    let newlineIndex;
-                    while ((newlineIndex = chatBuffer.indexOf('\n')) !== -1) {
-                      const jsonString = chatBuffer.substring(0, newlineIndex);
-                      chatBuffer = chatBuffer.substring(newlineIndex + 1);
+                  let newlineIndex;
+                  while ((newlineIndex = chatBuffer.indexOf('\n')) !== -1) {
+                    const jsonString = chatBuffer.substring(0, newlineIndex);
+                    chatBuffer = chatBuffer.substring(newlineIndex + 1);
 
-                      if (jsonString) {
-                        try {
-                          console.log('[Client]📨 Encrypted data received');
-                          const chatMsg = JSON.parse(jsonString);
-                          const decrypted = decryptWithSessionKey(chatMsg.message, this.session.sessionKey);
-                          console.log(`[Client]📄 Received answer: "${decrypted}"`);
-                          this.rl.prompt();
-                        } catch (e) {
-                          console.error('[Client]🚨  Error parsing JSON from buffer:', e.message, 'Data:', jsonString);
-                        }
+                    if (jsonString) {
+                      try {
+                        console.log('[Client]📨 Encrypted data received');
+                        const chatMsg = JSON.parse(jsonString);
+                        const decrypted = decryptWithSessionKey(chatMsg.message, this.session.sessionKey);
+                        console.log(`[Client]📄 Received answer: "${decrypted}"`);
+                        this.rl.prompt();
+                      } catch (e) {
+                        console.error('[Client]🚨 Error parsing JSON from buffer:', e.message, 'Data:', jsonString);
                       }
                     }
-                  });
-                } else {
-                  console.error('[Client]🚨 Error: The SERVER FINISHED message is incorrect.');
-                  this.disconnect();
-                }
-              } catch (e) {
-                console.error('[Client]🚨[6] Error:', e.message);
+                  }
+                });
+              } else {
+                console.error('[Client]🚨 Error: The SERVER FINISHED message is incorrect.');
                 this.disconnect();
               }
-            })
-          } catch (e) {
-            console.error(`[Client]🚨[3] !!! VERIFICATION FAILED: ${e.message} !!!`);
-            this.disconnect();
-          }
+            } catch (e) {
+              console.error('[Client]🚨[6] Error:', e.message);
+              this.disconnect();
+            }
+          });
         } catch (e) {
           console.error('[Client]🚨[2] Error:', e.message);
           this.disconnect();
@@ -205,6 +198,36 @@ class TLSClient {
         console.log('[Client] Readline interface closed.');
       });
     }
+  }
+
+  checkCertValidity(serverCert) {
+    return new Promise((resolve, reject) => {
+      const caSocket = new net.Socket();
+
+      caSocket.connect(CA_PORT, CA_HOST, () => {
+        console.log(`[Client]🔌[3] Connected to CA Server on port ${CA_PORT}`);
+        caSocket.write(serverCert);
+      });
+
+      caSocket.once('data', (caResponseData) => {
+        const caResponse = caResponseData.toString();
+        console.log(`[Client]📨[3] Received response from CA: "${caResponse}"`);
+        caSocket.end();
+
+        if (caResponse === 'VALID') {
+          resolve();
+          caSocket.end();
+        } else {
+          reject(new Error('CA rejected the certificate'));
+          caSocket.end();
+        }
+      });
+
+      caSocket.on('error', (err) => {
+        console.error(`[Client]🚨[3] !!! VERIFICATION FAILED: ${e.message} !!!`);
+        this.disconnect();
+      });
+    });
   }
 
   closeReadline() {
