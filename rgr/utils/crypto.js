@@ -6,7 +6,7 @@ const generateRandomString = (length = 32) => {
   return crypto.randomBytes(length);
 };
 
-function encryptWithPublicKey(data, publicKey) {
+const encryptWithPublicKey = (data, publicKey) => {
   const buffer = Buffer.from(data, 'utf8');
   const encrypted = crypto.publicEncrypt(
     publicKey,
@@ -14,7 +14,7 @@ function encryptWithPublicKey(data, publicKey) {
   );
 
   return encrypted.toString('base64');
-}
+};
 
 const decryptWithPrivateKey = (encryptedData, privateKey) => {
   const buffer = Buffer.from(encryptedData, 'base64');

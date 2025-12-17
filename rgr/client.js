@@ -224,7 +224,7 @@ class TLSClient {
       });
 
       caSocket.on('error', (err) => {
-        console.error(`[Client]🚨[3] !!! VERIFICATION FAILED: ${e.message} !!!`);
+        console.error(`[Client]🚨[3] !!! VERIFICATION FAILED: ${err.message} !!!`);
         this.disconnect();
       });
     });
