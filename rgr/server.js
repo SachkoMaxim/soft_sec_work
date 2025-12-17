@@ -8,6 +8,7 @@ const {
   encryptWithSessionKey,
   decryptWithSessionKey,
 } = require('./utils/crypto');
+const { fragmentSend } = require('./utils/frag-send');
 
 const PORT = 7462;
 
@@ -26,6 +27,7 @@ class TLSServer {
     console.log('✔️ Server has uploaded its key and certificate.\n');
 
     this.server = null;
+    this.isChat = false;
   }
 
   start() {
@@ -80,63 +82,54 @@ class TLSServer {
               );
               console.log(`\n[Server]✅[5] Session Key generated: ${session.sessionKey.toString('hex').substring(0, 16)}...`);
 
-              // Крок 6: Отримання 'Client Finished' (зашифрованого session key)
-              socket.once('data', (clientFinishedData) => {
-                try {
-                  const clientFinished = JSON.parse(clientFinishedData.toString());
-                  console.log('\n[Server]📨[6] Received encrypted CLIENT FINISHED');
+              // Крок 6: Відправка 'Server Finished' (зашифрованого session key)
+              const finishedMessage = 'Server: Finished';
+              const serverFinishedMsg = encryptWithSessionKey(finishedMessage, session.sessionKey);
 
-                  const decryptedMsg = decryptWithSessionKey(clientFinished.message, session.sessionKey);
+              console.log('\n[Server]📤[6] Sending encrypted SERVER FINISHED');
+              fragmentSend(socket, JSON.stringify({ type: 'SERVER_FINISHED', message: serverFinishedMsg }) + '\n', 'Server');
+              console.log('[Server]✅[6] Sent SERVER FINISHED');
 
-                  if (decryptedMsg === 'Client: Finished') {
-                    console.log(`[Server]🔐[6] Received CLIENT FINISHED: "${decryptedMsg}"`);
+              let chatBuffer = '';
+              socket.on('data', (encryptedChatData) => {
+                chatBuffer += encryptedChatData.toString();
 
-                    // Крок 6: Відправка 'Server Finished' (зашифрованого session key)
-                    const finishedMessage = 'Server: Finished';
-                    const serverFinishedMsg = encryptWithSessionKey(finishedMessage, session.sessionKey);
+                let newlineIndex;
+                while ((newlineIndex = chatBuffer.indexOf('\n')) !== -1) {
+                  const jsonString = chatBuffer.substring(0, newlineIndex);
+                  chatBuffer = chatBuffer.substring(newlineIndex + 1);
 
-                    console.log('\n[Server]📤[6] Sending encrypted SERVER FINISHED');
-                    socket.write(JSON.stringify({ type: 'SERVER_FINISHED', message: serverFinishedMsg }));
-                    console.log('[Server]✅[6] Sent SERVER FINISHED');
+                  if (jsonString) {
+                    try {
+                      console.log('\n[Server]📨 Encrypted data received');
+                      const chatMsg = JSON.parse(jsonString);
+                      const decrypted = decryptWithSessionKey(chatMsg.message, session.sessionKey);
+                      if (decrypted === 'Client: Finished') {
+                        // Крок 6: Отримання 'Client Finished' (зашифрованого session key)
+                        console.log('\n[Server]📨[6] Received encrypted CLIENT FINISHED');
+                        console.log(`[Server]🔐[6] Received CLIENT FINISHED: "${decrypted}"`);
 
-                    // Крок 7: Початок захищеного чату
-                    console.log('\n🎉 ========================================');
-                    console.log('✅ TLS/SSL HANDSHAKE COMPLETED!');
-                    console.log('🔒 Secure channel established');
-                    console.log('========================================\n');
+                        // Крок 7: Початок захищеного чату
+                        console.log('\n🎉 ========================================');
+                        console.log('✅ TLS/SSL HANDSHAKE COMPLETED!');
+                        console.log('🔒 Secure channel established');
+                        console.log('========================================\n');
 
-                    let chatBuffer = '';
-                    socket.on('data', (encryptedChatData) => {
-                      chatBuffer += encryptedChatData.toString();
-
-                      let newlineIndex;
-                      while ((newlineIndex = chatBuffer.indexOf('\n')) !== -1) {
-                        const jsonString = chatBuffer.substring(0, newlineIndex);
-                        chatBuffer = chatBuffer.substring(newlineIndex + 1);
-
-                        if (jsonString) {
-                          try {
-                            console.log('\n[Server]📨 Encrypted data received');
-                            const chatMsg = JSON.parse(jsonString);
-                            const decrypted = decryptWithSessionKey(chatMsg.message, session.sessionKey);
-                            console.log(`[Server]📄 Received message: "${decrypted}"`);
-
-                            const reply = encryptWithSessionKey(`Server received: ${decrypted}`, session.sessionKey);
-                            socket.write(JSON.stringify({ type: 'ENCRYPTED_DATA', message: reply }) + '\n');
-                            console.log(`[Server]📤 Send encrypted data: "Server received: ${decrypted}"`);
-                          } catch (e) {
-                            console.error('[Server]🚨 Error parsing JSON from buffer:', e.message, 'Data:', jsonString);
-                          }
-                        }
+                        this.isChat = true;
+                      } else if (this.isChat) {
+                        console.log(`[Server]📄 Received message: "${decrypted}"`);
+                        const reply = encryptWithSessionKey(`Server received: ${decrypted}`, session.sessionKey);
+                        fragmentSend(socket, JSON.stringify({ type: 'ENCRYPTED_DATA', message: reply }) + '\n', 'Server');
+                        console.log(`[Server]📤 Send encrypted data: "Server received: ${decrypted}"`);
+                      } else {
+                        console.error('[Server]🚨 Error: The CLIENT FINISHED message is incorrect.');
+                        socket.destroy();
                       }
-                    });
-                  } else {
-                    console.error('[Server]🚨 Error: The CLIENT FINISHED message is incorrect.');
-                    socket.destroy();
+                    } catch (e) {
+                      console.error('[Server]🚨 Error parsing JSON from buffer:', e.message, 'Data:', jsonString);
+                      socket.destroy();
+                    }
                   }
-                } catch (e) {
-                  console.error('[Server]🚨[6] Error:', e.message);
-                  socket.destroy();
                 }
               });
             } catch (e) {
@@ -151,7 +144,8 @@ class TLSServer {
       });
 
       socket.on('close', () => {
-          console.log('[Server]👋 Client disconnected\n');
+        console.log('[Server]👋 Client disconnected\n');
+        this.isChat = false;
       });
 
       socket.on('error', (err) => {
