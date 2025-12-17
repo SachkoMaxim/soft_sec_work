@@ -288,7 +288,7 @@ class Node {
 
       client.write(JSON.stringify(clientHello));
 
-      console.log('[Client]✅[1] Sent CLIENT HELLO');
+      console.log(`[${MY_NAME} - ${targetName}]✅[1] Sent CLIENT HELLO`);
 
       // Крок 2: Отримання 'Server Hello'
       client.once('data', async (serverHelloData) => {
@@ -426,13 +426,13 @@ class Node {
       const caSocket = new net.Socket();
 
       caSocket.connect(CA_PORT, CA_HOST, () => {
-        console.log(`[Client]🔌[3] Connected to CA Server on port ${CA_PORT}`);
+        console.log(`[${MY_NAME}]🔌[3] Connected to CA Server on port ${CA_PORT}`);
         caSocket.write(serverCert);
       });
 
       caSocket.once('data', (caResponseData) => {
         const caResponse = caResponseData.toString();
-        console.log(`[Client]📨[3] Received response from CA: "${caResponse}"`);
+        console.log(`[${MY_NAME}]📨[3] Received response from CA: "${caResponse}"`);
         caSocket.end();
 
         if (caResponse === 'VALID') {
@@ -463,9 +463,9 @@ class Node {
       this.server.close(() => {
         console.log('🛑 Server stopped!');
         this.closeReadline();
-        process.exit(0);
       });
     }
+    process.exit(0);
   }
 }
 
