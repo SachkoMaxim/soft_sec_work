@@ -343,9 +343,9 @@ class Node {
 
           if (packet.type === 'FINISHED') {
             if (decrypted.includes(': Finished')) {
-              // Крок 6: Отримання 'Server Finished' (зашифрованого session key)
-              console.log(`\n[${MY_NAME}]📨[6] Received encrypted SERVER FINISHED`);
-              console.log(`[${MY_NAME}]🔐[6] Received SERVER FINISHED: "${decrypted}"`);
+              // Крок 6: Отримання '... Finished' (зашифрованого session key)
+              console.log(`\n[${MY_NAME}]📨[6] Received encrypted FINISHED`);
+              console.log(`[${MY_NAME}]🔐[6] Received FINISHED: "${decrypted}"`);
 
               peerName = decrypted.split(':')[0];
 
@@ -385,7 +385,7 @@ class Node {
             }
   
             seenMessages.add(broadcastObj.id);
-            console.log(`\n[BROADCAST від ${broadcastObj.origin}]📄 Received answer: "${broadcastObj.text}"`);
+            console.log(`\n[BROADCAST from ${broadcastObj.origin}]📄 Received answer: "${broadcastObj.text}"`);
   
             this.broadcastMessage(broadcastObj, socket);
 
